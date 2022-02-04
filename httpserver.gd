@@ -1,4 +1,7 @@
 extends Reference
+class_name SimpleHttpServer
+
+signal on_request(peer, _responder_instance, _responder_function)
 
 class Request:
 	extends Reference
@@ -185,6 +188,7 @@ func set_responder(instance: Object, function: String):
 
 func listen(port: int, bind_address := "*") -> int:
 	stop()
+	self.connect("on_request", self, "_on_request")
 	var err := _server.listen(port, bind_address)
 	if err == OK:
 		err = _server_thread.start(self, "_listen_thread")
@@ -196,10 +200,12 @@ func stop() -> void:
 	if _server_thread.is_active():
 		_server_shutdown = true
 		_server_thread.wait_to_finish()
+	if self.is_connected("on_request", self, "_on_request"):
+		self.disconnect("on_request", self, "_on_request")
 
 # Call this function directly to run the server in the main thread
 # For debugging purposes only
-func _listen_thread(_null) -> void:
+func _listen_thread(_null = null) -> void:
 	_server_shutdown = false
 	_take_connections()
 
@@ -210,12 +216,31 @@ func _take_connections() -> void:
 			continue
 		var peer := _server.take_connection()
 		print_debug("Got peer: ", peer.get_connected_host(), ":", peer.get_connected_port())
-		var request := Request.new(peer)
+		emit_signal("on_request", peer, _responder_instance, _responder_function)
+
+
+func _on_request(peer, _responder_instance, _responder_function):
+	var handler_thread = Thread.new()
+	handler_thread.start(RequestHandler.new(peer, _responder_instance, _responder_function), "_handle_request")
+	handler_thread.wait_to_finish()
+
+class RequestHandler:
+	var _peer
+	var _responder
+	var _responder_func_name
+	
+	func _init(peer, responder, responder_func_name):
+		_peer = peer
+		_responder = responder
+		_responder_func_name = responder_func_name
+		
+	func _handle_request():
+		var request := Request.new(_peer)
 		var request_parser := RequestParser.new(request)
 		if request_parser.fetch():
-			var response: Response = _responder_instance.call(_responder_function, request)
-			response.respond(peer)
-		peer.disconnect_from_host()
+			var response: Response = _responder.call(_responder_func_name, request)
+			response.respond(_peer)
+		_peer.disconnect_from_host()	
 
 # If extending this class, you must override this function
 func _respond(_request: Request) -> Response:
